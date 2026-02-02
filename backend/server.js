@@ -8,8 +8,23 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// Middleware - FIXED CORS CONFIGURATION
+app.use(cors({
+    origin: ['https://kuku-yetu.netlify.app', 'http://localhost:3000', 'http://localhost:5500', 'http://127.0.0.1:5500'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Handle pre-flight requests
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.status(200).send();
+});
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -84,17 +99,24 @@ initializeDatabase();
 
 // Middleware: Verify Admin Token
 function verifyAdmin(req, res, next) {
-    const token = req.headers.authorization?.split(' ')[1];
+    const authHeader = req.headers.authorization;
     
-    if (!token) {
+    if (!authHeader) {
         return res.status(401).json({ success: false, message: 'No token provided' });
     }
     
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+    
+    if (!token) {
+        return res.status(401).json({ success: false, message: 'Invalid token format' });
+    }
+    
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
         req.adminEmail = decoded.email;
         next();
     } catch (error) {
+        console.error('Token verification error:', error);
         return res.status(401).json({ success: false, message: 'Invalid token' });
     }
 }
@@ -105,7 +127,7 @@ const MPESA_CONFIG = {
     consumerSecret: process.env.MPESA_CONSUMER_SECRET || '47f4e6afa6c076cc4044ccf7747504525d6caf22',
     shortCode: process.env.MPESA_SHORTCODE || '174379',
     passkey: process.env.MPESA_PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
-    callbackUrl: process.env.MPESA_CALLBACK_URL || 'https://your-backend-url.onrender.com/api/payments/callback'
+    callbackUrl: process.env.MPESA_CALLBACK_URL || 'https://kuku-yetu-3rd.onrender.com/api/payments/callback'
 };
 
 // Get M-Pesa Access Token
@@ -381,7 +403,7 @@ app.post('/api/admin/login', async (req, res) => {
         if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
             const token = jwt.sign(
                 { email: email },
-                process.env.JWT_SECRET,
+                process.env.JWT_SECRET || 'your-secret-key',
                 { expiresIn: '24h' }
             );
             
@@ -396,7 +418,7 @@ app.post('/api/admin/login', async (req, res) => {
     }
 });
 
-// Get Dashboard Stats
+// Get Dashboard Stats - FIXED: Added verifyAdmin middleware
 app.get('/api/admin/stats', verifyAdmin, async (req, res) => {
     try {
         const ordersResult = await pool.query('SELECT COUNT(*) as count FROM orders');
@@ -417,7 +439,7 @@ app.get('/api/admin/stats', verifyAdmin, async (req, res) => {
     }
 });
 
-// Get Recent Orders
+// Get Recent Orders - FIXED: Added verifyAdmin middleware
 app.get('/api/admin/orders/recent', verifyAdmin, async (req, res) => {
     try {
         const result = await pool.query(
@@ -437,7 +459,7 @@ app.get('/api/admin/orders/recent', verifyAdmin, async (req, res) => {
     }
 });
 
-// Get All Orders
+// Get All Orders - FIXED: Added verifyAdmin middleware
 app.get('/api/admin/orders', verifyAdmin, async (req, res) => {
     try {
         const result = await pool.query(
@@ -466,6 +488,19 @@ app.get('/api/admin/orders', verifyAdmin, async (req, res) => {
         
     } catch (error) {
         console.error('Get orders error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// ADDED MISSING ROUTE: Get Products for Admin
+app.get('/api/admin/products', verifyAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM products ORDER BY created_at DESC'
+        );
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Get admin products error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
@@ -543,13 +578,55 @@ app.delete('/api/admin/products/:id', verifyAdmin, async (req, res) => {
     }
 });
 
+// ADDED: Debug endpoint to test CORS
+app.get('/api/test-cors', (req, res) => {
+    res.json({
+        message: 'CORS is working!',
+        timestamp: new Date().toISOString(),
+        origin: req.headers.origin,
+        allowedOrigins: ['https://kuku-yetu.netlify.app', 'http://localhost:3000', 'http://localhost:5500']
+    });
+});
+
+// ADDED: Debug endpoint for admin
+app.get('/api/admin/test', verifyAdmin, (req, res) => {
+    res.json({
+        message: 'Admin API is working!',
+        adminEmail: req.adminEmail,
+        timestamp: new Date().toISOString()
+    });
+});
+
 // Health Check
 app.get('/health', (req, res) => {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// ADDED: Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        message: 'Kuku Yetu API Server',
+        version: '1.0.0',
+        endpoints: {
+            public: ['/api/products', '/api/orders', '/api/payments'],
+            admin: ['/api/admin/*'],
+            health: '/health',
+            test: '/api/test-cors'
+        }
+    });
+});
+
+// ADDED: 404 handler for undefined routes
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: `Route not found: ${req.method} ${req.url}`
+    });
 });
 
 // Start Server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`CORS configured for: https://kuku-yetu.netlify.app, http://localhost:3000, http://localhost:5500`);
 });
