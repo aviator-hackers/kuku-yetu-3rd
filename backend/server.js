@@ -99,21 +99,6 @@ async function initializeDatabase() {
             )
         `);
 
-        // Create default admin user if not exists
-        const adminExists = await pool.query(
-            'SELECT * FROM admin_users WHERE email = $1',
-            ['admin@kukuyetu.com']
-        );
-
-        if (adminExists.rows.length === 0 && process.env.ADMIN_PASSWORD) {
-            const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
-            await pool.query(
-                'INSERT INTO admin_users (email, password, name) VALUES ($1, $2, $3)',
-                ['admin@kukuyetu.com', hashedPassword, 'Admin']
-            );
-            console.log('✅ Default admin user created');
-        }
-
         console.log('Database tables initialized successfully');
     } catch (error) {
         console.error('Database initialization error:', error);
@@ -588,15 +573,10 @@ app.get('/api/orders/:orderId', async (req, res) => {
 
 // ==================== ADMIN ROUTES ====================
 
-// Admin Login - FIXED VERSION
+// Admin Login with better validation
 app.post('/api/admin/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        
-        console.log('🔐 LOGIN ATTEMPT:', {
-            email,
-            password: password ? '***' : 'empty'
-        });
         
         if (!email || !password) {
             return res.status(400).json({ 
@@ -604,28 +584,13 @@ app.post('/api/admin/login', async (req, res) => {
                 message: 'Email and password are required' 
             });
         }
-
-        // Clean inputs
-        const cleanEmail = email.trim();
-        const cleanPassword = password.trim();
         
         // Check environment variables first
         if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
-            const envEmail = process.env.ADMIN_EMAIL.trim();
-            const envPassword = process.env.ADMIN_PASSWORD.trim();
-            
-            console.log('📝 Comparing with .env:', {
-                inputEmail: cleanEmail,
-                envEmail: envEmail,
-                passwordsMatch: cleanPassword === envPassword ? 'YES' : 'NO'
-            });
-            
-            if (cleanEmail === envEmail && cleanPassword === envPassword) {
-                console.log('✅ .env CREDENTIALS MATCH!');
-                
+            if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASSWORD) {
                 const token = jwt.sign(
                     { 
-                        email: cleanEmail,
+                        email: email,
                         role: 'admin',
                         timestamp: Date.now()
                     },
@@ -633,28 +598,29 @@ app.post('/api/admin/login', async (req, res) => {
                     { expiresIn: '24h' }
                 );
                 
+                // Update last login
+                await pool.query(
+                    'UPDATE admin_users SET last_login = CURRENT_TIMESTAMP WHERE email = $1',
+                    [email]
+                );
+                
                 return res.json({ 
                     success: true, 
                     token,
-                    user: { email: cleanEmail, role: 'admin' }
+                    user: { email, role: 'admin' }
                 });
             }
         }
         
         // Check database for admin users
-        console.log('🔍 Checking database...');
         const userResult = await pool.query(
             'SELECT * FROM admin_users WHERE email = $1',
-            [cleanEmail]
+            [email]
         );
         
         if (userResult.rows.length > 0) {
             const user = userResult.rows[0];
-            console.log('📋 User found:', user.email);
-            
-            // Compare passwords
-            const isValidPassword = await bcrypt.compare(cleanPassword, user.password);
-            console.log('🔑 Password valid:', isValidPassword);
+            const isValidPassword = await bcrypt.compare(password, user.password);
             
             if (isValidPassword) {
                 const token = jwt.sign(
@@ -668,7 +634,11 @@ app.post('/api/admin/login', async (req, res) => {
                     { expiresIn: '24h' }
                 );
                 
-                console.log('✅ DATABASE LOGIN SUCCESS');
+                await pool.query(
+                    'UPDATE admin_users SET last_login = CURRENT_TIMESTAMP WHERE id = $1',
+                    [user.id]
+                );
+                
                 return res.json({ 
                     success: true, 
                     token,
@@ -681,14 +651,13 @@ app.post('/api/admin/login', async (req, res) => {
             }
         }
         
-        console.log('❌ Invalid credentials');
         res.status(401).json({ 
             success: false, 
-            message: 'Invalid email or password. Use: admin@kukuyetu.com / YourSecurePassword123!' 
+            message: 'Invalid credentials' 
         });
         
     } catch (error) {
-        console.error('🔥 Login error:', error);
+        console.error('Login error:', error);
         res.status(500).json({ 
             success: false, 
             message: 'Server error during login' 
@@ -1428,9 +1397,8 @@ const server = app.listen(PORT, () => {
     console.log(`   - https://kuku-yetu.netlify.app`);
     console.log(`   - http://localhost:3000`);
     console.log(`   - http://localhost:5500`);
-    console.log(`📊 Health check: https://kuku-yetu-3rd.onrender.com/health`);
-    console.log(`🔐 Admin login: https://kuku-yetu-3rd.onrender.com/api/admin/login`);
-    console.log(`👤 Default credentials: admin@kukuyetu.com / YourSecurePassword123!`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📚 API Docs: http://localhost:${PORT}/`);
 });
 
 // Handle server errors
