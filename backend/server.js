@@ -36,6 +36,15 @@ const pool = new Pool({
     }
 });
 
+// Test database connection
+pool.on('connect', () => {
+    console.log('✅ Database connected successfully');
+});
+
+pool.on('error', (err) => {
+    console.error('❌ Database connection error:', err);
+});
+
 // Initialize Database Tables
 async function initializeDatabase() {
     try {
@@ -89,9 +98,9 @@ async function initializeDatabase() {
             )
         `);
 
-        console.log('Database tables initialized successfully');
+        console.log('✅ Database tables initialized successfully');
     } catch (error) {
-        console.error('Database initialization error:', error);
+        console.error('❌ Database initialization error:', error);
     }
 }
 
@@ -341,14 +350,51 @@ app.post('/api/payments/callback', async (req, res) => {
     }
 });
 
-// Create Order
+// FIXED: Create Order - with comprehensive error handling and logging
 app.post('/api/orders', async (req, res) => {
+    console.log('=== CREATE ORDER REQUEST RECEIVED ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
     try {
         const { fullName, email, phone, latitude, longitude, items, totalAmount, transactionId, paymentStatus } = req.body;
         
-        // Generate order ID
-        const orderId = `KY${Date.now()}${Math.floor(Math.random() * 1000)}`;
+        // Validate required fields
+        if (!fullName) {
+            console.error('Validation error: Missing fullName');
+            return res.status(400).json({ success: false, message: 'Full name is required' });
+        }
         
+        if (!email) {
+            console.error('Validation error: Missing email');
+            return res.status(400).json({ success: false, message: 'Email is required' });
+        }
+        
+        if (!phone) {
+            console.error('Validation error: Missing phone');
+            return res.status(400).json({ success: false, message: 'Phone is required' });
+        }
+        
+        if (!items || !Array.isArray(items) || items.length === 0) {
+            console.error('Validation error: Invalid items array');
+            return res.status(400).json({ success: false, message: 'Order must contain at least one item' });
+        }
+        
+        if (!totalAmount || isNaN(totalAmount) || totalAmount <= 0) {
+            console.error('Validation error: Invalid totalAmount');
+            return res.status(400).json({ success: false, message: 'Valid total amount is required' });
+        }
+        
+        // Generate unique order ID
+        const orderId = `KY${Date.now()}${Math.floor(Math.random() * 1000)}`;
+        console.log('Generated order ID:', orderId);
+        
+        // Use default coordinates if not provided
+        const orderLatitude = latitude || -0.0917;
+        const orderLongitude = longitude || 34.7680;
+        
+        console.log('Attempting to insert order into database...');
+        
+        // Insert order into database
         const result = await pool.query(
             `INSERT INTO orders 
             (order_id, customer_name, email, phone, latitude, longitude, items, total_amount, payment_status, transaction_id, status) 
@@ -359,26 +405,53 @@ app.post('/api/orders', async (req, res) => {
                 fullName,
                 email,
                 phone,
-                latitude || 0,
-                longitude || 0,
+                orderLatitude,
+                orderLongitude,
                 JSON.stringify(items),
                 totalAmount,
                 paymentStatus || 'pending',
-                transactionId,
+                transactionId || null,
                 'pending'
             ]
         );
         
-        res.json({
+        console.log('✅ Order inserted successfully!');
+        console.log('Order details:', result.rows[0]);
+        
+        // Return success response
+        const order = result.rows[0];
+        res.status(201).json({
             success: true,
             orderId: orderId,
-            order: result.rows[0],
-            items: JSON.parse(result.rows[0].items)
+            order: {
+                _id: order.id,
+                orderId: order.order_id,
+                customerName: order.customer_name,
+                email: order.email,
+                phone: order.phone,
+                latitude: order.latitude,
+                longitude: order.longitude,
+                items: JSON.parse(order.items),
+                totalAmount: parseFloat(order.total_amount),
+                paymentStatus: order.payment_status,
+                transactionId: order.transaction_id,
+                status: order.status,
+                createdAt: order.created_at
+            },
+            message: 'Order created successfully'
         });
         
     } catch (error) {
-        console.error('Create order error:', error);
-        res.status(500).json({ success: false, message: 'Failed to create order' });
+        console.error('❌ CREATE ORDER ERROR:', error);
+        console.error('Error stack:', error.stack);
+        
+        // Send detailed error response
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to create order',
+            error: error.message,
+            details: error.stack
+        });
     }
 });
 
@@ -845,4 +918,5 @@ app.listen(PORT, () => {
     console.log(`   - http://localhost:3000`);
     console.log(`   - http://localhost:5500`);
     console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📝 API docs: http://localhost:${PORT}/`);
 });
